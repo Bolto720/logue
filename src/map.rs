@@ -132,7 +132,7 @@ impl Map {
             let w = rng.range(MIN_SIZE, MAX_SIZE);
             let h = rng.range(MIN_SIZE, MAX_SIZE);
             let x = rng.roll_dice(1, MAP_WIDTH as i32 - w - 1) - 1;
-            let y = rng.roll_dice(1, MAP_HEIGHT as i32 - h - 1) - 1;
+            let y = rng.roll_dice(1, MAP_HEIGHT as i32 - 21 - h - 1) - 1;
             let new_room = Rect::new(x, y, w, h);
             let mut ok = true;
             for other_room in map.rooms.iter() {
