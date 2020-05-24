@@ -20,9 +20,14 @@ pub use damage_system::DamageSystem;
 mod melee_combat_system;
 pub use melee_combat_system::MeleeCombatSystem;
 mod gui;
-pub use gamelog::GameLog;
+pub use gui::ItemMenuResult;
 mod gamelog;
+pub use gamelog::GameLog;
+mod inventory_system;
 mod spawner;
+pub use inventory_system::ItemCollectionSystem;
+pub use inventory_system::PotionUseSystem;
+pub use inventory_system::ItemDropSystem;
 
 #[derive(PartialEq, Copy, Clone)]
 pub enum RunState {
@@ -30,6 +35,8 @@ pub enum RunState {
     PreRun,
     PlayerTurn,
     MonsterTurn,
+    ShowInventory,
+    ShowDropItem,
 }
 
 pub struct State {
@@ -53,6 +60,15 @@ impl State {
         let mut damage = DamageSystem {};
         damage.run_now(&self.ecs);
 
+        let mut pickup = ItemCollectionSystem {};
+        pickup.run_now(&self.ecs);
+
+        let mut potions = PotionUseSystem {};
+        potions.run_now(&self.ecs);
+
+        let mut drop_items = ItemDropSystem{};
+        drop_items.run_now(&self.ecs);
+
         self.ecs.maintain();
     }
 }
@@ -60,6 +76,8 @@ impl State {
 impl GameState for State {
     fn tick(&mut self, ctx: &mut Rltk) {
         ctx.cls();
+
+        draw_map(&self.ecs, ctx);
 
         let mut newrunstate;
         {
@@ -70,6 +88,7 @@ impl GameState for State {
         match newrunstate {
             RunState::PreRun => {
                 self.run_systems();
+                self.ecs.maintain();
                 newrunstate = RunState::AwaitingInput;
             }
             RunState::AwaitingInput => {
@@ -77,11 +96,39 @@ impl GameState for State {
             }
             RunState::PlayerTurn => {
                 self.run_systems();
+                self.ecs.maintain();
                 newrunstate = RunState::MonsterTurn;
             }
             RunState::MonsterTurn => {
                 self.run_systems();
+                self.ecs.maintain();
                 newrunstate = RunState::AwaitingInput;
+            }
+            RunState::ShowInventory => {
+                let result = gui::show_inventory(self, ctx);
+                match result.0 {
+                    ItemMenuResult::Cancel => newrunstate = RunState::AwaitingInput,
+                    ItemMenuResult::NoResponse => {}
+                    ItemMenuResult::Selected => {
+                        let item_entity = result.1.unwrap();
+                        let mut intent = self.ecs.write_storage::<WantsToDrinkPotion>();
+                        intent.insert(*self.ecs.fetch::<Entity>(), WantsToDrinkPotion {potion: item_entity}).expect("Unable to insert intent");
+                        newrunstate = RunState::PlayerTurn;
+                    }
+                }
+            }
+            RunState::ShowDropItem => {
+                let result = gui::drop_item_menu(self, ctx);
+                match result.0 {
+                    ItemMenuResult::Cancel => newrunstate = RunState::AwaitingInput,
+                    ItemMenuResult::NoResponse => {}
+                    ItemMenuResult::Selected => {
+                        let item_entity = result.1.unwrap();
+                        let mut intent = self.ecs.write_storage::<WantsToDropItem>();
+                        intent.insert(*self.ecs.fetch::<Entity>(), WantsToDropItem {item: item_entity}).expect("Unable to insert intent");
+                        newrunstate = RunState::PlayerTurn;
+                    }
+                }
             }
         }
 
@@ -92,13 +139,14 @@ impl GameState for State {
 
         damage_system::delete_the_dead(&mut self.ecs);
 
-        draw_map(&self.ecs, ctx);
-
+        // RENDER
         let positions = self.ecs.read_storage::<Position>();
         let renderables = self.ecs.read_storage::<Renderable>();
         let map = self.ecs.fetch::<Map>();
+        let mut data = (&positions, &renderables).join().collect::<Vec<_>>();
+        data.sort_by(|&a, &b| b.1.render_order.cmp(&a.1.render_order));        
 
-        for (pos, render) in (&positions, &renderables).join() {
+        for (pos, render) in data.iter() {
             let idx = map.xy_idx(pos.x, pos.y);
             if map.visible_tiles[idx] {
                 ctx.set(pos.x, pos.y, render.fg, render.bg, render.glyph);
@@ -119,9 +167,7 @@ fn main() -> rltk::BError {
 
     //context.with_post_scanlines(true);
 
-    let mut gs = State {
-        ecs: World::new(),
-    };
+    let mut gs = State { ecs: World::new() };
 
     //Register components
     gs.ecs.register::<Position>();
@@ -134,7 +180,13 @@ fn main() -> rltk::BError {
     gs.ecs.register::<CombatStats>();
     gs.ecs.register::<SufferDamage>();
     gs.ecs.register::<WantsToMelee>();
-    
+    gs.ecs.register::<Item>();
+    gs.ecs.register::<Potion>();
+    gs.ecs.register::<WantsToPickupItem>();
+    gs.ecs.register::<InBackpack>();
+    gs.ecs.register::<WantsToDrinkPotion>();
+    gs.ecs.register::<WantsToDropItem>();
+
     //Add map
     let map: Map = Map::new_map_rooms_and_corridors();
     let (player_x, player_y) = map.rooms[0].centre();
@@ -148,13 +200,13 @@ fn main() -> rltk::BError {
         spawner::spawn_room(&mut gs.ecs, room);
     }
 
-
     gs.ecs.insert(map);
     gs.ecs.insert(Point::new(player_x, player_y));
     gs.ecs.insert(player_entity);
     gs.ecs.insert(RunState::PreRun);
-    gs.ecs.insert(gamelog::GameLog{ entries: vec!["Welcome to Logue".to_string()]});
- 
+    gs.ecs.insert(gamelog::GameLog {
+        entries: vec!["Welcome to Logue".to_string()],
+    });
 
     rltk::main_loop(context, gs)
 }
